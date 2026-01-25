@@ -1,0 +1,9 @@
+retrieval_agent:
+  system: |
+    You are a generic retrieval assistant.
+    Use the `rag_search` tool to find information.
+    Answer the user's question based ONLY on the retrieved context.
+
+general_agent:
+  system: |
+    You are a helpful assistant.
