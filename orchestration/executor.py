@@ -10,6 +10,7 @@ from schemas.request import ServiceRequest
 # Agent Imports (In production, replace with Registry)
 from agents.retrieval_agent import RetrievalAgent
 from agents.general_agent import GeneralAgent
+from agents.critic_agent import CriticAgent
 # from agents.planner import PlannerAgent # Planner is not used here, only Plan object
 
 logger = logging.getLogger(__name__)
@@ -26,8 +27,8 @@ class OrchestrationExecutor:
         self.agents = {
             "retrieval": RetrievalAgent(),
             "general": GeneralAgent(),
+            "critic": CriticAgent(),
             # "analytics": AnalyticsAgent(),
-            # "critic": CriticAgent()
         }
         
     async def execute_plan(self, plan: ExecutionPlan, context: ServiceRequest) -> ExecutionResult:
