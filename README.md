@@ -24,6 +24,47 @@ Request → Planner → ExecutionPlan → Executor → Critic → FinalResponse
 - **mcp_client/**: Protocol layer for tool invocation.
 - **schemas/**: Domain models (`Plan`, `Result`, `CriticResult`, `FinalResponse`).
 
+## API
+
+### POST /v1/orchestrate
+
+Single entry point for all GenAI requests.
+
+> **Current Status:** Pass-through mode for APIM → FastAPI connectivity validation.  
+> Returns a static JSON response echoing the input (no agent logic invoked).
+
+**Request:**
+```json
+{
+  "query": "Hello from APIM test",
+  "user_id": "user-123",
+  "session_id": "session-456"
+}
+```
+
+**Response (Pass-through mode):**
+```json
+{
+  "request_id": "debug",
+  "result": {
+    "message": "APIM → FastAPI works",
+    "input": "Hello from APIM test"
+  }
+}
+```
+
+**Response (Full orchestration - future):**
+```json
+{
+  "output": "RAG (Retrieval-Augmented Generation) is...",
+  "is_safe": true,
+  "risk_level": "low",
+  "recommendation": "proceed",
+  "issues": [],
+  "trace_id": "abc-123"
+}
+```
+
 ## Development
 
 ### Prerequisites
@@ -54,4 +95,3 @@ python3 tests/test_critic_pure.py
 python3 tests/test_e2e_flow.py
 python3 verify_structure.py
 ```
-
