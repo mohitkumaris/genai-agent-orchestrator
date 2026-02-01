@@ -6,6 +6,7 @@ from typing import Dict, Any, List
 from agents.planner import ExecutionPlan, PlanStep
 from orchestration.state import ExecutionResult, StepResult, StepStatus
 from schemas.request import ServiceRequest
+from schemas.result import OrchestrationResult
 
 # Agent Imports (In production, replace with Registry)
 from agents.retrieval_agent import RetrievalAgent
@@ -30,6 +31,29 @@ class OrchestrationExecutor:
             "critic": CriticAgent(),
             # "analytics": AnalyticsAgent(),
         }
+
+    def execute(self, agent_name: str, prompt: str) -> OrchestrationResult:
+        """
+        Simple execution path: route to agent and return typed result.
+        
+        This is the minimal typed interface for agent invocation.
+        
+        Args:
+            agent_name: Name of the agent to invoke (e.g., 'general', 'retrieval')
+            prompt: The user's prompt
+            
+        Returns:
+            OrchestrationResult: Typed result with agent_name and output
+        """
+        agent = self.agents.get(agent_name)
+        if not agent:
+            return OrchestrationResult(
+                agent_name=agent_name,
+                output=f"Error: No agent found for '{agent_name}'"
+            )
+        
+        output = agent.run(prompt)
+        return OrchestrationResult(agent_name=agent_name, output=output)
         
     async def execute_plan(self, plan: ExecutionPlan, context: ServiceRequest) -> ExecutionResult:
         """

@@ -27,4 +27,28 @@ class BaseAgent(ABC):
 
     @abstractmethod
     async def execute(self, request: ServiceRequest) -> ServiceResponse:
+        """
+        Execute agent with full request context.
+        
+        Args:
+            request: Structured service request with query and context
+            
+        Returns:
+            ServiceResponse: Structured response with answer and metadata
+        """
+        pass
+
+    @abstractmethod
+    def run(self, prompt: str) -> str:
+        """
+        Simple synchronous interface for agent execution.
+        
+        This is the minimal typed contract that all agents must implement.
+        
+        Args:
+            prompt: The user's prompt/query
+            
+        Returns:
+            str: The agent's response
+        """
         pass

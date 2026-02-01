@@ -20,9 +20,36 @@ Request → Planner → ExecutionPlan → Executor → Critic → FinalResponse
 ### Layers
 - **app/**: API Gateway (FastAPI). No business logic.
 - **orchestration/**: The "Brain". `OrchestrationRouter` controls the flow. `Executor` runs immutable `ExecutionPlans`.
-- **agents/**: Stateless specialists (`Planner`, `Retrieval`, `Critic`).
+- **agents/**: Stateless specialists (`Planner`, `Retrieval`, `General`, `Critic`). All agents inherit from `BaseAgent` and implement `run(prompt: str) -> str`.
 - **mcp_client/**: Protocol layer for tool invocation.
-- **schemas/**: Domain models (`Plan`, `Result`, `CriticResult`, `FinalResponse`).
+- **schemas/**: Domain models (`Plan`, `Result`, `OrchestrationResult`, `CriticResult`, `FinalResponse`).
+
+### Agent Contract
+
+All agents implement a typed base contract:
+
+```python
+class BaseAgent(ABC):
+    @abstractmethod
+    async def execute(self, request: ServiceRequest) -> ServiceResponse:
+        """Full request context execution."""
+        pass
+
+    @abstractmethod
+    def run(self, prompt: str) -> str:
+        """Simple synchronous interface for agent execution."""
+        pass
+```
+
+### Orchestration Result
+
+The executor returns a typed `OrchestrationResult`:
+
+```python
+class OrchestrationResult(BaseModel):
+    agent_name: str  # Name of the agent that produced this result
+    output: str      # The agent's output
+```
 
 ## API
 

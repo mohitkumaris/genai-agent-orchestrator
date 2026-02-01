@@ -45,12 +45,17 @@ class RetrievalAgent(BaseAgent):
          # Let's adhere to the requested skeleton signature as the PRIMARY public API.
          pass
          
-    def run(
+    def run_step(
         self,
         *,
         step: PlanStep,
         context: MCPContext,
     ) -> AgentResult:
+        """
+        Execute a single retrieval step using MCP-exposed RAG tools.
+        
+        This is the structured interface for plan-based execution.
+        """
         if not step.input:
             raise ValueError("Retrieval step requires input payload")
 
@@ -64,22 +69,32 @@ class RetrievalAgent(BaseAgent):
             agent="retrieval",
             output=result,
         )
+
+    def run(self, prompt: str) -> str:
+        """
+        Simple synchronous interface for agent execution.
+        
+        Provides minimal typed contract compliance with BaseAgent.
+        Creates default context and step for MCP tool execution.
+        """
+        ctx = MCPContext.create()
+        step = PlanStep(
+            step_id=0,
+            agent_role="retrieval",
+            intent="simple_retrieval",
+            description="Simple retrieval from prompt",
+            input={"query": prompt}
+        )
+        result = self.run_step(step=step, context=ctx)
+        return str(result.output)
     
     # Bridge for the current Executor Code
     async def execute(self, request: ServiceRequest) -> ServiceResponse:
-        # Attempts to reconstruct or extract what is needed. 
-        # Current executor logic is: 
-        # agent_req = context.model_copy(update={"context": enriched_context})
-        # response = await agent.execute(agent_req)
+        """
+        Bridge method for compatibility with OrchestrationExecutor.
         
-        # This implies `request` contains everything.
-        # But `RetrievalAgent` is supposed to just run 1 step.
-        # The executor should ideally pass the STEP info.
-        
-        # For now, to satisfy the interface, we'll assume the executor passes 'query' in request.query
-        # and we treat that as step input.
-        
-        # Create Dummy Context and Step for the bridge
+        Converts ServiceRequest to structured step format and delegates to run_step.
+        """
         ctx = MCPContext.create()
         step = PlanStep(
             step_id=0, 
@@ -89,7 +104,7 @@ class RetrievalAgent(BaseAgent):
             input={"query": request.query}
         )
         
-        result = self.run(step=step, context=ctx)
+        result = self.run_step(step=step, context=ctx)
         
         return ServiceResponse(
             answer=str(result.output), 

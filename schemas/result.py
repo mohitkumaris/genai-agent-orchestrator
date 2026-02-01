@@ -56,3 +56,14 @@ class AgentResult(BaseModel):
     @classmethod
     def success(cls, agent: str, output: Any, metadata: Optional[dict] = None) -> "AgentResult":
         return cls(agent=agent, output=output, metadata=metadata or {})
+
+
+class OrchestrationResult(BaseModel):
+    """
+    Typed result from orchestration layer.
+    
+    This is the canonical output format for agent execution,
+    providing a consistent contract for all agent invocations.
+    """
+    agent_name: str = Field(..., description="Name of the agent that produced this result")
+    output: str = Field(..., description="The agent's output")

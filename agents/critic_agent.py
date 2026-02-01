@@ -48,7 +48,7 @@ class CriticAgent(BaseAgent):
     def __init__(self):
         super().__init__("critic_agent")
 
-    def run(
+    def run_step(
         self,
         *,
         step: PlanStep,
@@ -57,6 +57,8 @@ class CriticAgent(BaseAgent):
     ) -> AgentResult:
         """
         Evaluate the proposed output against retrieved context.
+        
+        This is the structured interface for plan-based validation.
         
         Args:
             step: The current plan step being executed.
@@ -492,7 +494,7 @@ class CriticAgent(BaseAgent):
             },
         )
         
-        result = self.run(step=step, context=ctx, previous_results=[])
+        result = self.run_step(step=step, context=ctx, previous_results=[])
         
         # Extract CriticResult for response
         critic_result: CriticResult = result.output
@@ -506,6 +508,29 @@ class CriticAgent(BaseAgent):
                 "grounding_score": critic_result.grounding_score,
             },
         )
+
+    def run(self, prompt: str) -> str:
+        """
+        Simple synchronous interface for agent execution.
+        
+        Provides minimal typed contract compliance with BaseAgent.
+        For CriticAgent, this creates a minimal validation context.
+        """
+        ctx = MCPContext.create()
+        step = PlanStep(
+            step_id=0,
+            agent_role="critic",
+            intent="simple_validation",
+            description="Simple validation from prompt",
+            input={
+                "proposed_output": prompt,
+                "retrieved_chunks": [],
+                "metadata": {},
+            },
+        )
+        result = self.run_step(step=step, context=ctx, previous_results=[])
+        critic_result: CriticResult = result.output
+        return f"Validation: {critic_result.recommendation.value}, Safe: {critic_result.is_safe}"
 
 
 # Type hint for forward reference
