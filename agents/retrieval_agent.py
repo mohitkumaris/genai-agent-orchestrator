@@ -1,112 +1,138 @@
-from typing import Any, Dict
+"""
+Retrieval Agent
 
+Execution agent for RAG (Retrieval-Augmented Generation).
+Uses retrieval tool to get documents, then LLM to generate grounded response.
+
+DESIGN RULES:
+- Retrieval is a TOOL, not orchestration logic
+- Tool usage tracked in metadata
+- Documents never exposed raw to API
+- LLM generates final response grounded in context
+"""
+
+from typing import List
 from agents.base import BaseAgent
-from schemas.plan import PlanStep
-from schemas.result import AgentResult
-from genai_mcp_core.context import MCPContext
-from mcp_client.executor import MCPToolExecutor
 from schemas.request import ServiceRequest
 from schemas.response import ServiceResponse
+from schemas.result import AgentResult
+from llm.langchain_adapter import generate_with_context
+
 
 class RetrievalAgent(BaseAgent):
     """
-    Executes a single retrieval step using MCP-exposed RAG tools.
-    """
-
-    TOOL_NAME = "rag_search"
-
-    def __init__(self): 
-        # Note: BaseAgent inits LLM, but we don't use it here.
-        super().__init__("retrieval_agent")
-        self._mcp_executor = MCPToolExecutor()
-
-    async def execute(self, request: ServiceRequest) -> ServiceResponse:
-         # Constraint: BaseAgent.execute signature returns ServiceResponse, primarily designed for Planner/Executor flow.
-         # But the specific user request asks for:
-         # def run(self, *, step: PlanStep, context: MCPContext) -> AgentResult:
-         # We need to bridge this. The Executor calls `agent.execute(ServiceRequest)`.
-         # But the new RetrievalAgent contract is lower-level.
-         
-         # For strict compliance with the USER REQUEST skeleton:
-         # I will implement the requested `run` method.
-         # And I will stick the `execute` method as a bridge if needed, 
-         # OR I assume the Executor will be refactored to call `run` if it knows it's a strongly typed agent?
-         # Or more likely, I implement `execute` to EXTRACT the step and context and call `run`.
-         
-         # However, ServiceRequest doesn't strictly have the PlanStep.
-         # The current Executor passes `ServiceRequest` enriched with context.
-         # But the Executor logic (which we just wrote) iterates `plan.steps`. 
-         # It doesn't pass the `step` object itself into `agent.execute(request)`. 
-         
-         # To align without rewriting Executor's contract immediately:
-         # I will map ServiceRequest -> logic matching the requested behavior.
-         # BUT `step.input` is critical.
-         
-         # Let's adhere to the requested skeleton signature as the PRIMARY public API.
-         pass
-         
-    def run_step(
-        self,
-        *,
-        step: PlanStep,
-        context: MCPContext,
-    ) -> AgentResult:
-        """
-        Execute a single retrieval step using MCP-exposed RAG tools.
-        
-        This is the structured interface for plan-based execution.
-        """
-        if not step.input:
-            raise ValueError("Retrieval step requires input payload")
-
-        result = self._mcp_executor.execute(
-            tool_name=self.TOOL_NAME,
-            payload=step.input,
-            context=context,
-        )
-
-        return AgentResult.success(
-            agent="retrieval",
-            output=result,
-        )
-
-    def run(self, prompt: str) -> str:
-        """
-        Simple synchronous interface for agent execution.
-        
-        Provides minimal typed contract compliance with BaseAgent.
-        Creates default context and step for MCP tool execution.
-        """
-        ctx = MCPContext.create()
-        step = PlanStep(
-            step_id=0,
-            agent_role="retrieval",
-            intent="simple_retrieval",
-            description="Simple retrieval from prompt",
-            input={"query": prompt}
-        )
-        result = self.run_step(step=step, context=ctx)
-        return str(result.output)
+    RAG agent using tool + LLM pattern.
     
-    # Bridge for the current Executor Code
+    Flow:
+    1. Call retrieval tool to get relevant documents
+    2. Pass documents as context to LLM
+    3. Return grounded response with documents in metadata
+    """
+    
+    AGENT_NAME = "retrieval"
+    DEFAULT_CONFIDENCE = 0.7  # Higher confidence due to grounding
+    
+    def __init__(self, enable_tools: bool = True):
+        """
+        Initialize the RetrievalAgent.
+        
+        Args:
+            enable_tools: If True (default), use retrieval tool.
+                         If False, falls back to simulated retrieval.
+        """
+        super().__init__("retrieval_agent")
+        self._enable_tools = enable_tools
+        self._retrieval_tool = None
+        
+        if enable_tools:
+            from mcp.tools.registry import ToolRegistry
+            tools = ToolRegistry.get_instance().list_for_agent(self.AGENT_NAME)
+            # Find retrieval tool
+            for tool in tools:
+                if tool.name == "retrieval":
+                    self._retrieval_tool = tool
+                    break
+    
     async def execute(self, request: ServiceRequest) -> ServiceResponse:
         """
-        Bridge method for compatibility with OrchestrationExecutor.
+        Full request context execution (async).
         
-        Converts ServiceRequest to structured step format and delegates to run_step.
+        Bridge for OrchestrationExecutor compatibility.
         """
-        ctx = MCPContext.create()
-        step = PlanStep(
-            step_id=0, 
-            agent_role="retrieval", 
-            intent="legacy_execute", 
-            description="Bridge execution", 
-            input={"query": request.query}
+        result = self.run(request.query)
+        return ServiceResponse(
+            answer=result.output,
+            metadata=result.metadata,
+        )
+    
+    def run(self, prompt: str) -> AgentResult:
+        """
+        Execute RAG: retrieval tool → LLM with context.
+        
+        Returns AgentResult with:
+        - output: LLM-generated response grounded in context
+        - metadata: includes retrieval info (documents, scores)
+        """
+        if not self._retrieval_tool:
+            return self._run_fallback(prompt)
+        
+        # Step 1: Call retrieval tool
+        retrieval_result = self._retrieval_tool.run({
+            "query": prompt,
+            "k": 3,
+        })
+        
+        if not retrieval_result.success:
+            return AgentResult(
+                agent_name=self.AGENT_NAME,
+                output=f"Retrieval failed: {retrieval_result.error}",
+                confidence=0.1,
+                metadata={"error": retrieval_result.error},
+            )
+        
+        documents = retrieval_result.output.get("documents", [])
+        
+        if not documents:
+            return AgentResult(
+                agent_name=self.AGENT_NAME,
+                output="No relevant documents found for your query.",
+                confidence=0.3,
+                metadata={"retrieval": {"documents": [], "query": prompt}},
+            )
+        
+        # Step 2: Generate with context
+        output, metadata = generate_with_context(
+            prompt=prompt,
+            context_documents=documents,
         )
         
-        result = self.run_step(step=step, context=ctx)
+        # Step 3: Enrich metadata with retrieval info
+        metadata["retrieval"] = {
+            "documents": documents,
+            "query": retrieval_result.output.get("query", prompt),
+            "total_retrieved": retrieval_result.output.get("total_retrieved", len(documents)),
+        }
         
-        return ServiceResponse(
-            answer=str(result.output), 
-            metadata=result.metadata
+        return AgentResult(
+            agent_name=self.AGENT_NAME,
+            output=output,
+            confidence=self.DEFAULT_CONFIDENCE,
+            metadata=metadata,
+        )
+    
+    def _run_fallback(self, prompt: str) -> AgentResult:
+        """Fallback when tools are disabled."""
+        from llm.langchain_adapter import generate
+        
+        system_prompt = """You are a retrieval assistant. When asked to search or find information, 
+provide a helpful response. Note that retrieval tools are currently disabled."""
+        
+        output, metadata = generate(prompt, system_prompt=system_prompt)
+        metadata["note"] = "Retrieval tools disabled - using direct LLM"
+        
+        return AgentResult(
+            agent_name=self.AGENT_NAME,
+            output=output,
+            confidence=0.4,
+            metadata=metadata,
         )

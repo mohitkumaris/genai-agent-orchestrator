@@ -1,59 +1,198 @@
 import logging
 import time
 import uuid
-from typing import Dict, Any, List
+from datetime import datetime
+from typing import Dict, Any, List, Tuple
 
 from agents.planner import ExecutionPlan, PlanStep
+from agents.planner_agent import PlannerAgent, PlannerDecision
+from agents.validator_agent import ValidatorAgent
+from agents.analyst_agent import AnalystAgent
+from agents.evaluation_agent import EvaluationAgent
 from orchestration.state import ExecutionResult, StepResult, StepStatus
 from schemas.request import ServiceRequest
-from schemas.result import OrchestrationResult
+from schemas.result import AgentResult
 
 # Agent Imports (In production, replace with Registry)
 from agents.retrieval_agent import RetrievalAgent
 from agents.general_agent import GeneralAgent
 from agents.critic_agent import CriticAgent
-# from agents.planner import PlannerAgent # Planner is not used here, only Plan object
+
+# Observability
+from observability.collector import TraceCollector
+from observability.sink import ConsoleTraceSink
+
+# Evaluation Persistence
+from evaluation.file_store import FileEvaluationStore
 
 logger = logging.getLogger(__name__)
 
 class OrchestrationExecutor:
     """
     The Engine.
-    Executes a static ExecutionPlan step-by-step.
+    
+    Orchestrates request flow:
+    1. Planner decides which agent to use
+    2. Selected agent executes and returns AgentResult
+    3. Validator validates output (optional)
     """
     
-    def __init__(self):
+    def __init__(
+        self,
+        enable_validation: bool = True,
+        enable_analysis: bool = True,
+        enable_evaluation: bool = True,
+        enable_tracing: bool = True,
+        enable_evaluation_persistence: bool = True,
+    ):
+        """
+        Initialize the executor.
+        
+        Args:
+            enable_validation: Whether to run validation after execution
+            enable_analysis: Whether to run analysis after execution
+            enable_evaluation: Whether to run quality evaluation after execution
+            enable_tracing: Whether to emit execution traces
+            enable_evaluation_persistence: Whether to persist evaluation data to file
+        """
+        # Planner for routing decisions
+        self._planner = PlannerAgent()
+        
+        # Internal agents (non-user-facing)
+        self._validator = ValidatorAgent()
+        self._analyst = AnalystAgent()
+        self._evaluator = EvaluationAgent()
+        self._enable_validation = enable_validation
+        self._enable_analysis = enable_analysis
+        self._enable_evaluation = enable_evaluation
+        
+        # Evaluation persistence (optional)
+        evaluation_store = FileEvaluationStore() if enable_evaluation_persistence else None
+        
+        # Tracing (observability)
+        self._trace_collector = TraceCollector(
+            sink=ConsoleTraceSink(verbose=True),
+            enabled=enable_tracing,
+            evaluation_store=evaluation_store,
+        )
+        
         # Service Locator for Agents
         # In a real microservice, this might look up gRPC stubs
         self.agents = {
             "retrieval": RetrievalAgent(),
             "general": GeneralAgent(),
             "critic": CriticAgent(),
-            # "analytics": AnalyticsAgent(),
         }
 
-    def execute(self, agent_name: str, prompt: str) -> OrchestrationResult:
+    def orchestrate(self, prompt: str, validate: bool = True, analyze: bool = True) -> Tuple[AgentResult, PlannerDecision]:
         """
-        Simple execution path: route to agent and return typed result.
+        Full orchestration flow with planner and internal agents.
         
-        This is the minimal typed interface for agent invocation.
+        Flow:
+        1. Planner decides which agent should handle the prompt
+        2. Selected agent is invoked
+        3. Analyst analyzes output (if enabled)
+        4. Validator validates output (if enabled)
+        5. Evaluator scores quality (if enabled)
+        6. Trace is emitted (if enabled)
+        7. Returns AgentResult with analysis/validation/evaluation metadata
+        
+        Args:
+            prompt: The user's prompt
+            validate: Whether to validate the output (overrides instance setting)
+            analyze: Whether to analyze the output (overrides instance setting)
+            
+        Returns:
+            Tuple of (AgentResult, PlannerDecision)
+        """
+        # Tracing: capture start time and request ID
+        request_id = str(uuid.uuid4())
+        started_at = datetime.now()
+        decision = None
+        result = None
+        
+        try:
+            # Step 1: Planner decides
+            decision = self._planner.plan(prompt)
+            
+            # Step 2: Execute with selected agent
+            result = self.execute(decision.selected_agent, prompt)
+            
+            # Add routing info to metadata
+            result.metadata["routing"] = {
+                "selected_agent": decision.selected_agent,
+                "reason": decision.reason,
+            }
+            
+            # Step 3: Analyze output (non-user-facing)
+            should_analyze = self._enable_analysis and analyze
+            if should_analyze:
+                analysis = self._analyst.analyze(result.output, prompt)
+                result.metadata["analysis"] = analysis.model_dump()
+            
+            # Step 4: Validate output (non-user-facing)
+            should_validate = self._enable_validation and validate
+            if should_validate:
+                validation = self._validator.validate(result.output, prompt)
+                result.metadata["validation"] = validation.model_dump()
+                
+                # Adjust confidence based on validation
+                new_confidence = result.confidence + validation.confidence_delta
+                # Clamp to [0, 1]
+                result.confidence = max(0.0, min(1.0, new_confidence))
+            
+            # Step 5: Evaluate quality (non-user-facing)
+            should_evaluate = self._enable_evaluation
+            if should_evaluate:
+                evaluation = self._evaluator.evaluate(result.output, prompt)
+                result.metadata["evaluation"] = evaluation.model_dump()
+            
+            # Step 6: Emit trace (success)
+            self._trace_collector.capture(
+                request_id=request_id,
+                result=result,
+                started_at=started_at,
+                success=True,
+            )
+            
+            return result, decision
+            
+        except Exception as e:
+            # Emit trace on failure (never swallow)
+            agent_name = decision.selected_agent if decision else "unknown"
+            self._trace_collector.capture_failure(
+                request_id=request_id,
+                agent_name=agent_name,
+                started_at=started_at,
+                error=str(e),
+                metadata=result.metadata if result else {},
+            )
+            raise  # Re-raise - never swallow exceptions
+
+    def execute(self, agent_name: str, prompt: str) -> AgentResult:
+        """
+        Simple execution path: route to agent and return structured result.
+        
+        Returns AgentResult with confidence and metadata.
         
         Args:
             agent_name: Name of the agent to invoke (e.g., 'general', 'retrieval')
             prompt: The user's prompt
             
         Returns:
-            OrchestrationResult: Typed result with agent_name and output
+            AgentResult: Canonical agent result with agent_name, output, confidence, metadata
         """
         agent = self.agents.get(agent_name)
         if not agent:
-            return OrchestrationResult(
+            return AgentResult(
                 agent_name=agent_name,
-                output=f"Error: No agent found for '{agent_name}'"
+                output=f"Error: No agent found for '{agent_name}'",
+                confidence=0.0,
+                metadata={"error": "agent_not_found"},
             )
         
-        output = agent.run(prompt)
-        return OrchestrationResult(agent_name=agent_name, output=output)
+        # Agent.run() now returns AgentResult directly
+        return agent.run(prompt)
         
     async def execute_plan(self, plan: ExecutionPlan, context: ServiceRequest) -> ExecutionResult:
         """

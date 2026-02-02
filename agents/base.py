@@ -1,22 +1,31 @@
+"""
+Base Agent
+
+Abstract base class for all agents. Does NOT create LLM instances.
+Execution agents that need LLM should use llm/langchain_adapter.py.
+
+DESIGN RULE: LangChain is encapsulated in the adapter only.
+"""
+
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import Dict, Any
 import yaml
-from langchain_openai import AzureChatOpenAI
 
 from app.core.config import settings
 from schemas.request import ServiceRequest
 from schemas.response import ServiceResponse
 
+
 class BaseAgent(ABC):
+    """
+    Abstract base for all agents.
+    
+    NOTE: Does NOT instantiate LLM. Execution agents that need LLM
+    should import and use llm.langchain_adapter.generate() directly.
+    """
+    
     def __init__(self, name: str):
         self.name = name
-        self.llm = AzureChatOpenAI(
-            azure_deployment=settings.azure_openai_deployment_name,
-            openai_api_version=settings.azure_openai_api_version,
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_key=settings.azure_openai_api_key,
-            temperature=0.0
-        )
         self.prompt_config = self._load_prompt()
         
     def _load_prompt(self) -> str:

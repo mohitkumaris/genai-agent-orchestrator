@@ -5,8 +5,9 @@ The cognitive core of the GenAI Platform. This service is responsible for:
 - Planning execution strategies (PlannerAgent)
 - Routing to specialized agents via OrchestrationRouter
 - Orchestrating multi-step reasoning (OrchestrationExecutor)
-- Validating outputs (CriticAgent)
+- Validating and evaluating outputs
 - Invoking tools via MCP (Model Context Protocol)
+- Execution tracing and evaluation persistence
 
 ## Architecture
 
@@ -14,41 +15,61 @@ This service follows a **Strict Flat Layout** (No `src/`) and uses **FastAPI** +
 
 ### End-to-End Flow
 ```
-Request → Planner → ExecutionPlan → Executor → Critic → FinalResponse
+Request → Planner → Executor → Agent → Analyst → Validator → Evaluator → Trace → Response
 ```
 
 ### Layers
 - **app/**: API Gateway (FastAPI). No business logic.
-- **orchestration/**: The "Brain". `OrchestrationRouter` controls the flow. `Executor` runs immutable `ExecutionPlans`.
-- **agents/**: Stateless specialists (`Planner`, `Retrieval`, `General`, `Critic`). All agents inherit from `BaseAgent` and implement `run(prompt: str) -> str`.
-- **mcp_client/**: Protocol layer for tool invocation.
-- **schemas/**: Domain models (`Plan`, `Result`, `OrchestrationResult`, `CriticResult`, `FinalResponse`).
+- **orchestration/**: The "Brain". `OrchestrationRouter` controls flow. `Executor` runs plans with tracing.
+- **agents/**: Stateless specialists (`Planner`, `Retrieval`, `General`, `Critic`, `Analyst`, `Validator`, `Evaluator`).
+- **llm/**: LangChain adapter (isolated). Never leaks LangChain objects.
+- **mcp/tools/**: MCP tool abstractions (`Calculator`, `Retrieval`).
+- **observability/**: Execution tracing (`ExecutionTrace`, `TraceSink`, `TraceCollector`).
+- **evaluation/**: Offline evaluation persistence (`EvaluationStore`, `FileEvaluationStore`).
+- **schemas/**: Domain models (`AgentResult`, `FinalResponse`).
 
-### Agent Contract
+## Key Features
 
-All agents implement a typed base contract:
-
+### LangChain Isolation
+LangChain is used **only** in `llm/langchain_adapter.py`:
 ```python
-class BaseAgent(ABC):
-    @abstractmethod
-    async def execute(self, request: ServiceRequest) -> ServiceResponse:
-        """Full request context execution."""
-        pass
+from llm.langchain_adapter import generate, generate_with_tools, generate_with_context
+output, metadata = generate(prompt)
+```
+- No LangChain imports in agents
+- Metadata returned as plain dict
+- Provider-agnostic interface
 
-    @abstractmethod
-    def run(self, prompt: str) -> str:
-        """Simple synchronous interface for agent execution."""
-        pass
+### MCP Tools
+Tools are registered via `ToolRegistry` with permission-based access:
+```python
+from mcp.tools.registry import ToolRegistry, bootstrap_tools
+bootstrap_tools()  # Registers calculator, retrieval tools
+registry.list_for_agent("general")  # Returns allowed tools
 ```
 
-### Orchestration Result
-
-The executor returns a typed `OrchestrationResult`:
-
+### RAG as a Tool
+Retrieval is implemented as an MCP tool, not orchestration logic:
 ```python
-class OrchestrationResult(BaseModel):
-    agent_name: str  # Name of the agent that produced this result
-    output: str      # The agent's output
+# RetrievalAgent uses tool → LLM pattern
+retrieval_tool.run({"query": prompt, "k": 3})  # Get documents
+generate_with_context(prompt, documents)       # Ground response
+```
+
+### Execution Tracing
+Every request produces an `ExecutionTrace`:
+```
+[TRACE] ✓ abc123...
+  Agent: general | Latency: 3312ms
+  Metadata: routing, analysis, validation, evaluation
+```
+
+### Evaluation Persistence
+Evaluation signals are persisted to JSONL for offline analysis:
+```python
+from evaluation.file_store import FileEvaluationStore
+store = FileEvaluationStore()
+store.get_statistics()  # {'avg_evaluation_score': 0.775, 'success_rate': 1.0}
 ```
 
 ## API
@@ -57,33 +78,19 @@ class OrchestrationResult(BaseModel):
 
 Single entry point for all GenAI requests.
 
-> **Current Status:** Pass-through mode for APIM → FastAPI connectivity validation.  
-> Returns a static JSON response echoing the input (no agent logic invoked).
-
 **Request:**
 ```json
 {
-  "query": "Hello from APIM test",
+  "query": "What is Python?",
   "user_id": "user-123",
   "session_id": "session-456"
 }
 ```
 
-**Response (Pass-through mode):**
+**Response:**
 ```json
 {
-  "request_id": "debug",
-  "result": {
-    "message": "APIM → FastAPI works",
-    "input": "Hello from APIM test"
-  }
-}
-```
-
-**Response (Full orchestration - future):**
-```json
-{
-  "output": "RAG (Retrieval-Augmented Generation) is...",
+  "output": "Python is a high-level programming language...",
   "is_safe": true,
   "risk_level": "low",
   "recommendation": "proceed",
@@ -96,15 +103,12 @@ Single entry point for all GenAI requests.
 
 ### Prerequisites
 - Python 3.11+
-- `genai-mcp-core`
+- Azure OpenAI credentials (see `.env.example`)
 
 ### Setup
 ```bash
-# Create venv
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -e .
 ```
 
@@ -114,11 +118,20 @@ uvicorn app.main:app --reload
 ```
 
 ### Verification
-Run the pure Python verification suite:
 ```bash
-python3 tests/test_executor_pure.py
-python3 tests/test_retrieval_pure.py
-python3 tests/test_critic_pure.py
-python3 tests/test_e2e_flow.py
-python3 verify_structure.py
+# E2E flow tests
+.venv/bin/python tests/test_e2e_flow.py
+
+# Tool integration tests
+.venv/bin/python tests/test_tools.py
 ```
+
+## Configuration Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `enable_validation` | True | Run output validation |
+| `enable_analysis` | True | Run output analysis |
+| `enable_evaluation` | True | Run quality evaluation |
+| `enable_tracing` | True | Emit execution traces |
+| `enable_evaluation_persistence` | True | Persist to JSONL |

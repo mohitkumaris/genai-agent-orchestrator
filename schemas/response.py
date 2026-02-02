@@ -12,6 +12,33 @@ class ServiceResponse(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class OrchestrateResponse(BaseModel):
+    """
+    API response model for the /orchestrate endpoint.
+    
+    This is the external contract — clients receive this.
+    Wraps the essential fields from FinalResponse.
+    """
+    output: str = Field(..., description="Final response text")
+    is_safe: bool = Field(..., description="Whether the response passed validation")
+    risk_level: str = Field(..., description="Risk classification: low, medium, high")
+    recommendation: str = Field(..., description="Critic recommendation: proceed, warn, block")
+    issues: List[str] = Field(default_factory=list, description="List of identified issues")
+    trace_id: str = Field(..., description="Trace ID for observability")
+    
+    @classmethod
+    def from_final_response(cls, final: "FinalResponse") -> "OrchestrateResponse":
+        """Convert internal FinalResponse to API response."""
+        return cls(
+            output=final.response_text,
+            is_safe=final.is_safe,
+            risk_level=final.risk_level,
+            recommendation=final.recommendation,
+            issues=final.issues,
+            trace_id=final.trace_id,
+        )
+
+
 class FinalResponse(BaseModel):
     """
     Complete, machine-readable response from the orchestration flow.

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -47,15 +47,43 @@ class CriticResult(BaseModel):
 
 class AgentResult(BaseModel):
     """
-    Uniform output structure for all agents.
-    """
-    agent: str
-    output: Any
-    metadata: dict = Field(default_factory=dict)
+    Canonical agent output contract.
     
+    ALL agents MUST return this structure. No exceptions.
+    This schema enables:
+    - Multi-agent routing
+    - Critic validation
+    - Confidence scoring
+    - Observability and evals
+    """
+    agent_name: str = Field(..., description="Agent identifier (e.g., 'general', 'retrieval')")
+    output: str = Field(..., description="Final response from the agent")
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score between 0 and 1",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Execution metadata (model, tokens, latency, etc.)",
+    )
+
     @classmethod
-    def success(cls, agent: str, output: Any, metadata: Optional[dict] = None) -> "AgentResult":
-        return cls(agent=agent, output=output, metadata=metadata or {})
+    def success(
+        cls,
+        agent_name: str,
+        output: str,
+        confidence: float = 0.5,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "AgentResult":
+        """Factory method for creating successful results."""
+        return cls(
+            agent_name=agent_name,
+            output=output,
+            confidence=confidence,
+            metadata=metadata or {},
+        )
 
 
 class OrchestrationResult(BaseModel):
