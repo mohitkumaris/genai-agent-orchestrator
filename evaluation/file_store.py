@@ -84,6 +84,15 @@ class FileEvaluationStore(EvaluationStore):
         routing = metadata.get("routing", {})
         routing_reason = routing.get("reason") if isinstance(routing, dict) else None
         
+        # Extract policy result
+        policy = metadata.get("policy", {})
+        policy_status = policy.get("status") if isinstance(policy, dict) else None
+        policy_violations = policy.get("violations", []) if isinstance(policy, dict) else []
+        
+        # Extract SLA tier
+        sla = metadata.get("sla", {})
+        sla_tier = sla.get("tier") if isinstance(sla, dict) else None
+        
         return {
             "request_id": trace.request_id,
             "agent_name": trace.agent_name,
@@ -92,6 +101,10 @@ class FileEvaluationStore(EvaluationStore):
             "model": model,
             "evaluation_score": evaluation_score,
             "validation_valid": validation_valid,
+            "estimated_cost_usd": metadata.get("estimated_cost_usd", 0.0),
+            "policy_status": policy_status,
+            "policy_violations": policy_violations,
+            "sla_tier": sla_tier,
             "success": trace.success,
             "routing_reason": routing_reason,
             "error": trace.error,
@@ -131,7 +144,7 @@ class FileEvaluationStore(EvaluationStore):
         Compute basic statistics from stored evaluations.
         
         Returns:
-            Dict with count, avg_score, avg_latency, success_rate
+            Dict with count, avg_score, avg_latency, success_rate, cost stats
         """
         records = self.read_all()
         
@@ -141,10 +154,14 @@ class FileEvaluationStore(EvaluationStore):
         scores = [r["evaluation_score"] for r in records if r.get("evaluation_score") is not None]
         latencies = [r["latency_ms"] for r in records if r.get("latency_ms") is not None]
         successes = [r["success"] for r in records if r.get("success") is not None]
+        costs = [r["estimated_cost_usd"] for r in records if r.get("estimated_cost_usd") is not None]
         
         return {
             "count": len(records),
             "avg_evaluation_score": sum(scores) / len(scores) if scores else None,
             "avg_latency_ms": sum(latencies) / len(latencies) if latencies else None,
             "success_rate": sum(1 for s in successes if s) / len(successes) if successes else None,
+            "total_cost_usd": sum(costs) if costs else 0.0,
+            "avg_cost_usd": sum(costs) / len(costs) if costs else 0.0,
+            "max_cost_usd": max(costs) if costs else 0.0,
         }

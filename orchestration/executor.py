@@ -2,10 +2,13 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Callable, Optional
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from agents.planner import ExecutionPlan, PlanStep
-from agents.planner_agent import PlannerAgent, PlannerDecision
+from agents.planner import ExecutionPlan, PlanStep
+from agents.planner_agent import PlannerDecision
+from orchestration.planner import OrchestrationPlanner, EnrichedRoutingDecision
 from agents.validator_agent import ValidatorAgent
 from agents.analyst_agent import AnalystAgent
 from agents.evaluation_agent import EvaluationAgent
@@ -23,9 +26,17 @@ from observability.collector import TraceCollector
 from observability.sink import ConsoleTraceSink
 
 # Evaluation Persistence
+# Evaluation Persistence
 from evaluation.file_store import FileEvaluationStore
 
+# Memory
+from memory.session_store import get_session_store
+
 logger = logging.getLogger(__name__)
+
+# Session Policy Cache (Transient state for simple enforcement loop)
+# Map: session_id -> last_policy_result
+SESSION_POLICY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 class OrchestrationExecutor:
     """
@@ -33,9 +44,24 @@ class OrchestrationExecutor:
     
     Orchestrates request flow:
     1. Planner decides which agent to use
-    2. Selected agent executes and returns AgentResult
-    3. Validator validates output (optional)
+    2. Selected agent is invoked
+    3. Output is analyzed and validated
+    4. Quality is evaluated
+    5. Execution trace is emitted
+    
+    Includes hardening for timeouts and graceful degradation.
     """
+    
+    TIMEOUT_SECONDS = 30  # Max time per agent execution
+    
+    def _safe_execute(self, func: Callable, default: Any = None, error_msg: str = "Safe execution failed") -> Any:
+        """Execute a function safely, returning default on error."""
+        try:
+            return func()
+        except Exception as e:
+            logger.warning(f"{error_msg}: {e}")
+            return default
+
     
     def __init__(
         self,
@@ -55,8 +81,8 @@ class OrchestrationExecutor:
             enable_tracing: Whether to emit execution traces
             enable_evaluation_persistence: Whether to persist evaluation data to file
         """
-        # Planner for routing decisions
-        self._planner = PlannerAgent()
+        # Planner for routing decisions (orchestration layer with policy hints)
+        self._planner = OrchestrationPlanner()
         
         # Internal agents (non-user-facing)
         self._validator = ValidatorAgent()
@@ -84,23 +110,21 @@ class OrchestrationExecutor:
             "critic": CriticAgent(),
         }
 
-    def orchestrate(self, prompt: str, validate: bool = True, analyze: bool = True) -> Tuple[AgentResult, PlannerDecision]:
+    def orchestrate(
+        self,
+        prompt: str,
+        session_id: str = "default_session",
+        validate: bool = True,
+        analyze: bool = True,
+    ) -> Tuple[AgentResult, PlannerDecision]:
         """
         Full orchestration flow with planner and internal agents.
         
-        Flow:
-        1. Planner decides which agent should handle the prompt
-        2. Selected agent is invoked
-        3. Analyst analyzes output (if enabled)
-        4. Validator validates output (if enabled)
-        5. Evaluator scores quality (if enabled)
-        6. Trace is emitted (if enabled)
-        7. Returns AgentResult with analysis/validation/evaluation metadata
-        
         Args:
             prompt: The user's prompt
-            validate: Whether to validate the output (overrides instance setting)
-            analyze: Whether to analyze the output (overrides instance setting)
+            session_id: Session identifier for memory context (default: "default_session")
+            validate: Whether to validate the output
+            analyze: Whether to analyze the output
             
         Returns:
             Tuple of (AgentResult, PlannerDecision)
@@ -111,18 +135,80 @@ class OrchestrationExecutor:
         decision = None
         result = None
         
+        # Memory Access
+        session_store = get_session_store()
+        
         try:
-            # Step 1: Planner decides
-            decision = self._planner.plan(prompt)
+            # Step 1: Planner decides (with policy hints from orchestration layer)
+            # Step 1: Planner decides (with policy hints from orchestration layer)
+            # Retrieve last policy state for session
+            policy_context = SESSION_POLICY_CACHE.get(session_id)
             
-            # Step 2: Execute with selected agent
-            result = self.execute(decision.selected_agent, prompt)
+            # Safe wrap: If planner fails, fallback to general agent decision
+            def plan_step():
+                return self._planner.plan(prompt, policy_context=policy_context)
             
-            # Add routing info to metadata
-            result.metadata["routing"] = {
-                "selected_agent": decision.selected_agent,
-                "reason": decision.reason,
-            }
+            decision = self._safe_execute(
+                plan_step, 
+                default=EnrichedRoutingDecision(selected_agent="general", reason="Fallback due to planner failure"),
+                error_msg="Planner failed"
+            )
+            
+            # Step 2: Execute with selected agent (inject context)
+            context_str = ""
+            if decision.selected_agent == "general":
+                # Safe memory read
+                context_str = self._safe_execute(
+                    lambda: session_store.get_prompt_context(session_id),
+                    default="",
+                    error_msg="Memory read failed"
+                )
+            
+            # Execute agent with timeout
+            def run_agent():
+                if decision.selected_agent == "general":
+                    agent = self.agents["general"]
+                    return agent.run(prompt, context_str=context_str)
+                else:
+                    return self.execute(decision.selected_agent, prompt)
+            
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_agent)
+                    result = future.result(timeout=self.TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.error(f"Agent {decision.selected_agent} timed out")
+                result = AgentResult(
+                    agent_name=decision.selected_agent,
+                    output="I apologize, but the request timed out. Please try again.",
+                    confidence=0.0,
+                    metadata={"error": "timeout"}
+                )
+            except Exception as e:
+                logger.error(f"Agent execution failed: {e}")
+                result = AgentResult(
+                    agent_name=decision.selected_agent,
+                    output="I encountered an error processing your request.",
+                    confidence=0.0,
+                    metadata={"error": str(e)}
+                )
+
+            # Step 2b: Store execution turn in memory (Safe write)
+            self._safe_execute(
+                lambda: session_store.add_turn(session_id, "user", prompt),
+                error_msg="Memory write failed (user)"
+            )
+            self._safe_execute(
+                lambda: session_store.add_turn(session_id, "assistant", result.output),
+                error_msg="Memory write failed (assistant)"
+            )
+            
+            # Add routing info to metadata (including policy hints)
+            result.metadata["routing"] = decision.to_metadata()
+            
+            # Update Session Policy Cache (read-only observable)
+            if "policy" in result.metadata:
+                SESSION_POLICY_CACHE[session_id] = result.metadata["policy"]
             
             # Step 3: Analyze output (non-user-facing)
             should_analyze = self._enable_analysis and analyze

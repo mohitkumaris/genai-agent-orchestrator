@@ -61,18 +61,25 @@ When you need to perform calculations, use the calculator tool instead of comput
             output, _ = generate(request.query, system_prompt=self.SYSTEM_PROMPT)
         return ServiceResponse(answer=output)
 
-    def run(self, prompt: str) -> AgentResult:
+    def run(self, prompt: str, context_str: str = "") -> AgentResult:
         """
         Simple synchronous interface for agent execution.
         
+        Args:
+            prompt: User query
+            context_str: Optional conversation context to inject
+            
         Returns AgentResult with output, confidence, and metadata.
         Uses LangChain adapter internally - no LangChain types leak out.
         Tool usage is tracked in metadata["tool_calls"].
         """
+        # Inject context if provided
+        final_prompt = f"{context_str}\n\n{prompt}" if context_str else prompt
+        
         if self._tools:
-            output, metadata = generate_with_tools(prompt, self._tools, system_prompt=self.SYSTEM_PROMPT)
+            output, metadata = generate_with_tools(final_prompt, self._tools, system_prompt=self.SYSTEM_PROMPT)
         else:
-            output, metadata = generate(prompt, system_prompt=self.SYSTEM_PROMPT)
+            output, metadata = generate(final_prompt, system_prompt=self.SYSTEM_PROMPT)
         
         return AgentResult(
             agent_name=self.AGENT_NAME,

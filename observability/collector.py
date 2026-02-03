@@ -16,9 +16,45 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 from observability.trace import ExecutionTrace
 from observability.sink import TraceSink, ConsoleTraceSink
 from schemas.result import AgentResult
+from enforcement.audit import EnforcementAudit
 
 if TYPE_CHECKING:
     from evaluation.store import EvaluationStore
+
+# Cost estimation (lazy import to avoid circular deps)
+def _estimate_cost(metadata: Dict[str, Any]) -> float:
+    """Lazy wrapper for cost estimation."""
+    try:
+        from cost.estimator import estimate_cost
+        return estimate_cost(metadata)
+    except Exception:
+        return 0.0
+
+
+# Policy evaluation (lazy import to avoid circular deps)
+def _evaluate_policy(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Lazy wrapper for policy evaluation."""
+    try:
+        from policy.evaluator import evaluate_policy
+        result = evaluate_policy(metadata)
+        return result.to_dict()
+    except Exception:
+        return {"status": "error", "violations": [], "warnings": []}
+
+
+
+# SLA Classifier (lazy import)
+def _classify_sla(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Lazy wrapper for SLA classification."""
+    try:
+        from sla.classifier import classify_request
+        tier, limits = classify_request(metadata)
+        return {
+            "tier": tier,
+            "limits": limits.to_dict()
+        }
+    except Exception:
+        return {"tier": "unknown", "limits": {}}
 
 
 class TraceCollector:
@@ -86,13 +122,23 @@ class TraceCollector:
         try:
             finished_at = datetime.now()
             
+            # Compute cost estimate and add to metadata
+            metadata_with_cost = dict(result.metadata)
+            metadata_with_cost["estimated_cost_usd"] = _estimate_cost(result.metadata)
+            
+            # Evaluate policy (read-only, no action)
+            metadata_with_cost["policy"] = _evaluate_policy(metadata_with_cost)
+            
+            # Attach SLA (read-only)
+            metadata_with_cost["sla"] = _classify_sla(metadata_with_cost)
+            
             trace = ExecutionTrace(
                 request_id=request_id,
                 agent_name=result.agent_name,
                 success=success,
                 started_at=started_at,
                 finished_at=finished_at,
-                metadata=result.metadata,
+                metadata=metadata_with_cost,
                 error=error,
             )
             
@@ -101,6 +147,9 @@ class TraceCollector:
             
             # Persist evaluation data (if store configured)
             self._save_evaluation(trace)
+            
+            # Audit Enforcement
+            self._audit_enforcement(trace)
             
         except Exception as e:
             # Never throw - just log the failure
@@ -162,4 +211,39 @@ class TraceCollector:
             self._evaluation_store.save(trace)
         except Exception as e:
             print(f"[EVALUATION STORE ERROR] Failed to save evaluation: {e}")
+
+    def _audit_enforcement(self, trace: ExecutionTrace) -> None:
+        """
+        Check for and log enforcement actions and canary events for audit.
+        """
+        routing = trace.metadata.get("routing", {})
+        enforcement_data = routing.get("policy_enforcement")
+        canary_data = routing.get("canary")
+        
+        # 1. Standard Enforcement Audit
+        if enforcement_data and enforcement_data.get("applied"):
+            audit = EnforcementAudit(
+                rule_id=enforcement_data["type"],
+                action="enforce_routing",
+                trigger_reason=enforcement_data["reason"],
+                applied=True,
+                timestamp=trace.finished_at or datetime.now(),
+                request_id=trace.request_id
+            )
+            # Add canary info if present (via log message)
+            extra = f" Canary: {canary_data}" if canary_data else ""
+            print(f"[AUDIT] Enforcement applied: {audit.to_dict()}{extra}")
+            
+        # 2. Canary Skipped (Eligible but not sampled)
+        elif canary_data and canary_data.get("eligible") and not canary_data.get("sampled"):
+             # Record that it was eligible but skipped due to sampling
+             audit = EnforcementAudit(
+                rule_id="cost_guard",
+                action="canary_skip",
+                trigger_reason="sampled_out",
+                applied=False,
+                timestamp=trace.finished_at or datetime.now(),
+                request_id=trace.request_id
+             )
+             print(f"[AUDIT] Canary Skipped: {audit.to_dict()} Canary: {canary_data}")
 

@@ -9,8 +9,10 @@ DESIGN RULES:
 - Returns routing decision, NOT AgentResult
 - Uses deterministic heuristics, NOT Azure OpenAI
 - Defaults to 'general' agent
+- NO policy logic (policy lives in orchestration layer)
 """
 
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -32,8 +34,11 @@ class PlannerAgent:
     Inspects user prompt and decides which agent should handle it.
     Uses simple deterministic logic - NOT an LLM.
     
+    NOTE: This agent has NO policy awareness.
+          Policy influence is computed in orchestration layer.
+    
     Flow:
-        User Prompt → PlannerAgent → { selected_agent, reason } → Orchestrator → Selected Agent
+        User Prompt → PlannerAgent → { selected_agent, reason } → Orchestration
     """
     
     # Available agents for routing
