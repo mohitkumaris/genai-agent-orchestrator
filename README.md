@@ -2,12 +2,13 @@
 
 The cognitive core of the GenAI Platform. This service is responsible for:
 - Accepting user requests
-- Planning execution strategies (PlannerAgent)
-- Routing to specialized agents via OrchestrationRouter
-- Orchestrating multi-step reasoning (OrchestrationExecutor)
-- Validating and evaluating outputs
-- Invoking tools via MCP (Model Context Protocol)
-- Execution tracing and evaluation persistence
+- **Session-aware** context management
+- **Policy-driven** planning and routing
+- **Cost-aware** execution with selective enforcement
+- **SLA-based** classification and progressive rollout
+- Orchestrating specialized agents strategies
+- Validating, analyzing, and evaluating outputs
+- Execution tracing and audit logging
 
 ## Architecture
 
@@ -15,61 +16,65 @@ This service follows a **Strict Flat Layout** (No `src/`) and uses **FastAPI** +
 
 ### End-to-End Flow
 ```
-Request → Planner → Executor → Agent → Analyst → Validator → Evaluator → Trace → Response
+Request → SLA Classify → Memory → Planner (Policy) → Executor (Cost Guard) → Agent → Analyst → Validator → Evaluator → Trace
 ```
 
 ### Layers
 - **app/**: API Gateway (FastAPI). No business logic.
-- **orchestration/**: The "Brain". `OrchestrationRouter` controls flow. `Executor` runs plans with tracing.
+- **orchestration/**: The "Brain". `OrchestrationPlanner` applies policy. `Executor` runs plans with tracing.
 - **agents/**: Stateless specialists (`Planner`, `Retrieval`, `General`, `Critic`, `Analyst`, `Validator`, `Evaluator`).
+- **policy/**: Business rules engine (`Evaluator`, `Simulator`). Checks cost, latency, quality.
+- **cost/**: Cost estimation and pricing models (`Estimator`).
+- **sla/**: Tier classification (`Classifier`) and Offline Simulation (`Simulator`).
+- **enforcement/**: Governance layer. Config (`Kill Switch`), Audit logging, Canary rollout.
+- **memory/**: Session-scoped ephemeral context (`SessionStore`).
 - **llm/**: LangChain adapter (isolated). Never leaks LangChain objects.
 - **mcp/tools/**: MCP tool abstractions (`Calculator`, `Retrieval`).
-- **observability/**: Execution tracing (`ExecutionTrace`, `TraceSink`, `TraceCollector`).
-- **evaluation/**: Offline evaluation persistence (`EvaluationStore`, `FileEvaluationStore`).
-- **schemas/**: Domain models (`AgentResult`, `FinalResponse`).
+- **observability/**: Execution tracing (`ExecutionTrace`, `TraceCollector`).
+- **evaluation/**: Offline evaluation persistence (`FileEvaluationStore`).
 
 ## Key Features
 
-### LangChain Isolation
-LangChain is used **only** in `llm/langchain_adapter.py`:
-```python
-from llm.langchain_adapter import generate, generate_with_tools, generate_with_context
-output, metadata = generate(prompt)
-```
-- No LangChain imports in agents
-- Metadata returned as plain dict
-- Provider-agnostic interface
+### 🔍 Policy & Cost Guard
+Selective enforcement based on run-time risks:
+- **Policy Evaluator**: Checks metadata against rules (e.g., "cost > $0.05", "latency > 2s").
+- **Cost Guard**: If policy warns about cost, Planner enforces `prefer_cost_efficient` strategy.
+- **Trace Visibility**: All enforcement actions are recorded in `policy_enforcement` metadata.
 
-### MCP Tools
-Tools are registered via `ToolRegistry` with permission-based access:
-```python
-from mcp.tools.registry import ToolRegistry, bootstrap_tools
-bootstrap_tools()  # Registers calculator, retrieval tools
-registry.list_for_agent("general")  # Returns allowed tools
-```
+### 📊 SLA & Canary Rollout
+Tiered service levels with progressive enforcement:
+- **Classification**: Requests classified as `free`, `standard`, or `premium`.
+- **Simulation**: Offline `SLASimulator` to predict impact of limits.
+- **Canary Enforcement**: safely roll out enforcement to a % of traffic (e.g. 5% of Free Tier).
+- **Audit**: Skipped canary requests are auditable.
 
-### RAG as a Tool
-Retrieval is implemented as an MCP tool, not orchestration logic:
-```python
-# RetrievalAgent uses tool → LLM pattern
-retrieval_tool.run({"query": prompt, "k": 3})  # Get documents
-generate_with_context(prompt, documents)       # Ground response
-```
+### 🧠 Session Memory
+Short-term conversational context:
+- Stores recent turns in-memory.
+- Injected into prompt construction for continuity.
+- Automatically cleared per session (No long-term persistence).
 
-### Execution Tracing
-Every request produces an `ExecutionTrace`:
-```
-[TRACE] ✓ abc123...
-  Agent: general | Latency: 3312ms
-  Metadata: routing, analysis, validation, evaluation
-```
+### 🛡️ Governance
+Centralized control plane:
+- **Global Kill Switch**: `GENAI_ENFORCEMENT_ENABLED` env var disables all enforcement.
+- **Audit Logs**: Structured `EnforcementAudit` records for every intervention.
 
-### Evaluation Persistence
-Evaluation signals are persisted to JSONL for offline analysis:
-```python
-from evaluation.file_store import FileEvaluationStore
-store = FileEvaluationStore()
-store.get_statistics()  # {'avg_evaluation_score': 0.775, 'success_rate': 1.0}
+### ⚡ Execution Tracing
+Rich metadata for every request:
+```json
+{
+  "routing": {
+    "selected_agent": "general",
+    "policy_enforcement": {
+      "type": "cost_guard",
+      "applied": true,
+      "reason": "policy_warn_high_cost"
+    },
+    "canary": {"eligible": true, "sampled": true}
+  },
+  "sla": {"tier": "free"},
+  "estimated_cost_usd": 0.00005
+}
 ```
 
 ## API
@@ -91,11 +96,8 @@ Single entry point for all GenAI requests.
 ```json
 {
   "output": "Python is a high-level programming language...",
-  "is_safe": true,
-  "risk_level": "low",
-  "recommendation": "proceed",
-  "issues": [],
-  "trace_id": "abc-123"
+  "trace_id": "abc-123",
+  "metadata": { ... }
 }
 ```
 
@@ -122,11 +124,11 @@ uvicorn app.main:app --reload
 # E2E flow tests
 .venv/bin/python tests/test_e2e_flow.py
 
-# Tool integration tests
-.venv/bin/python tests/test_tools.py
+# Offline Simulation
+.venv/bin/python -c "from sla.simulator import SLASimulator..."
 ```
 
-## Configuration Flags
+## Configuration
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -135,3 +137,4 @@ uvicorn app.main:app --reload
 | `enable_evaluation` | True | Run quality evaluation |
 | `enable_tracing` | True | Emit execution traces |
 | `enable_evaluation_persistence` | True | Persist to JSONL |
+| `GENAI_ENFORCEMENT_ENABLED` | True | Master Kill Switch (Env Var) |
