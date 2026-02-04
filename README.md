@@ -26,12 +26,20 @@ Request → SLA Classify → Memory → Planner (Policy) → Executor (Cost Guar
 - **policy/**: Business rules engine (`Evaluator`, `Simulator`). Checks cost, latency, quality.
 - **cost/**: Cost estimation and pricing models (`Estimator`).
 - **sla/**: Tier classification (`Classifier`) and Offline Simulation (`Simulator`).
-- **enforcement/**: Governance layer. Config (`Kill Switch`), Audit logging, Canary rollout.
+- **enforcement/**: Governance layer. Config (`Kill Switch`), Audit logging, Canary rollout, Graduation evaluator.
+- **validation/**: Outcome validation and drift reporting.
 - **memory/**: Session-scoped ephemeral context (`SessionStore`).
 - **llm/**: LangChain adapter (isolated). Never leaks LangChain objects.
 - **mcp/tools/**: MCP tool abstractions (`Calculator`, `Retrieval`).
 - **observability/**: Execution tracing (`ExecutionTrace`, `TraceCollector`).
 - **evaluation/**: Offline evaluation persistence (`FileEvaluationStore`).
+
+### Architecture Documentation
+For detailed architectural references, see:
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — System diagram, planes, data flow, enforcement lifecycle, invariants
+- **[DECISION_LOG.md](DECISION_LOG.md)** — Why architectural decisions were made
+- **[EXTENSION_POINTS.md](EXTENSION_POINTS.md)** — Allowed extensions and hard prohibitions
+- **[KNOWLEDGE.md](KNOWLEDGE.md)** — Comprehensive knowledge base
 
 ## Key Features
 
@@ -58,6 +66,13 @@ Short-term conversational context:
 Centralized control plane:
 - **Global Kill Switch**: `GENAI_ENFORCEMENT_ENABLED` env var disables all enforcement.
 - **Audit Logs**: Structured `EnforcementAudit` records for every intervention.
+
+### 🎓 Graduation Evaluator
+Progressive enforcement lifecycle:
+- **Simulate**: Offline policy impact analysis before activation.
+- **Canary**: 5% rollout with deterministic sampling.
+- **Validate**: Compare predicted vs actual outcomes (drift report).
+- **Graduate**: GRADUATE / HOLD / ROLLBACK recommendations based on thresholds.
 
 ### ⚡ Execution Tracing
 Rich metadata for every request:
