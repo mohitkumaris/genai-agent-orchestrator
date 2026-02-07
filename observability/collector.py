@@ -151,6 +151,9 @@ class TraceCollector:
             # Audit Enforcement
             self._audit_enforcement(trace)
             
+            # Publish to LLMOps (fire-and-forget)
+            self._publish_to_llmops(trace)
+            
         except Exception as e:
             # Never throw - just log the failure
             print(f"[TRACE COLLECTOR ERROR] Failed to capture trace: {e}")
@@ -247,3 +250,15 @@ class TraceCollector:
              )
              print(f"[AUDIT] Canary Skipped: {audit.to_dict()} Canary: {canary_data}")
 
+    def _publish_to_llmops(self, trace: ExecutionTrace) -> None:
+        """
+        Publish trace to LLMOps platform.
+        
+        Fire-and-forget. Never throws. Never blocks execution.
+        """
+        try:
+            from observability.llmops_publisher import publish_all
+            publish_all(trace)
+        except Exception as e:
+            # Never throw - observability failure must not affect execution
+            print(f"[LLMOPS] Failed to publish: {e}")
