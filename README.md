@@ -92,6 +92,13 @@ Rich metadata for every request:
 }
 ```
 
+### 🛡️ Planner Stability (New)
+Robust routing logic that ensures:
+- **Determinism**: Identical inputs always yield identical routes.
+- **Fail-Safe**: Malformed or empty inputs default to `general` agent.
+- **Error Recovery**: Internal planner errors are caught and safe fallback is applied.
+- **Zero-Crash Policy**: Planner routing never blocks execution.
+
 ## API
 
 ### POST /v1/orchestrate

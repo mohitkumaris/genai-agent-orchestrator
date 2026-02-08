@@ -102,19 +102,36 @@ class OrchestrationPlanner:
         Returns:
             EnrichedRoutingDecision with policy hints
         """
-        # Step 1: Get base routing decision from agent
-        base_decision = self._planner.plan(prompt)
+        # Step 1: Get base routing decision from agent (SAFELY)
+        try:
+            if prompt is None:
+                # Handle None prompt explicitly
+                base_decision = PlannerDecision(
+                    selected_agent=PlannerAgent.DEFAULT_AGENT,
+                    reason="Default routing (invalid prompt)",
+                )
+            else:
+                base_decision = self._planner.plan(prompt)
+        except Exception:
+            # Fallback if planner agent fails
+            base_decision = PlannerDecision(
+                selected_agent=PlannerAgent.DEFAULT_AGENT,
+                reason="Default routing (planner failure)",
+            )
         
         # Step 2: Compute policy hints & enforcement (orchestration layer)
         policy_hint = None
         policy_influenced = False
-        policy_hint = None
-        policy_influenced = False
         enforcement = None
         enforcement_skipped = False
+        canary_meta = None
         
-        if self._policy_influence_enabled and policy_context:
-            policy_hint, policy_influenced, enforcement, enforcement_skipped, canary_meta = self._compute_policy_hints(policy_context, prompt)
+        try:
+            if self._policy_influence_enabled and policy_context and prompt:
+                policy_hint, policy_influenced, enforcement, enforcement_skipped, canary_meta = self._compute_policy_hints(policy_context, prompt)
+        except Exception:
+            # If policy logic fails, proceed without policy influence
+            pass
         
         return EnrichedRoutingDecision(
             selected_agent=base_decision.selected_agent,

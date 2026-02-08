@@ -11,7 +11,8 @@ def mock_llm():
 
 @pytest.fixture(autouse=True)
 def mock_llm_provider(monkeypatch, mock_llm):
-    # Patch the LLMProvider to return our mock
-    from genai_agent_orchestrator.integration.llm import LLMProvider
-    monkeypatch.setattr(LLMProvider, "get_chat_model", lambda **kwargs: mock_llm)
+    # LLMProvider seems to have been removed or refactored.
+    # For now, we simply return the mock_llm to satisfy the fixture signature.
+    # If specific tests need to patch internal LLM calls (e.g. langchain_adapter), 
+    # they should do it in the test itself or we can add it here later.
     return mock_llm

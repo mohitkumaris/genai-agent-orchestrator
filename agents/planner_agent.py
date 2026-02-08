@@ -55,23 +55,37 @@ class PlannerAgent:
         Returns:
             PlannerDecision with selected_agent and reason
         """
-        prompt_lower = prompt.lower()
-        
-        # Simple deterministic heuristics (scaffolding, not final intelligence)
-        if any(keyword in prompt_lower for keyword in ["search", "find", "lookup", "retrieve", "document"]):
-            return PlannerDecision(
-                selected_agent="retrieval",
-                reason="Contains retrieval-related keywords",
+        # SAFE GUARD: Handle empty or invalid input
+        if not prompt or not isinstance(prompt, str) or not prompt.strip():
+             return PlannerDecision(
+                selected_agent=self.DEFAULT_AGENT,
+                reason="Default routing for general queries",
             )
-        
-        if any(keyword in prompt_lower for keyword in ["validate", "verify", "check", "review", "critique"]):
+
+        try:
+            prompt_lower = prompt.lower()
+            
+            # Simple deterministic heuristics (scaffolding, not final intelligence)
+            if any(keyword in prompt_lower for keyword in ["search", "find", "lookup", "retrieve", "document"]):
+                return PlannerDecision(
+                    selected_agent="retrieval",
+                    reason="Contains retrieval-related keywords",
+                )
+            
+            if any(keyword in prompt_lower for keyword in ["validate", "verify", "check", "review", "critique"]):
+                return PlannerDecision(
+                    selected_agent="critic",
+                    reason="Contains validation-related keywords",
+                )
+            
+            # Default to general agent for all other cases
             return PlannerDecision(
-                selected_agent="critic",
-                reason="Contains validation-related keywords",
+                selected_agent=self.DEFAULT_AGENT,
+                reason="Default routing for general queries",
             )
-        
-        # Default to general agent for all other cases
-        return PlannerDecision(
-            selected_agent=self.DEFAULT_AGENT,
-            reason="Default routing for general queries",
-        )
+        except Exception:
+            # Fallback for any internal error
+            return PlannerDecision(
+                selected_agent=self.DEFAULT_AGENT,
+                reason="Default routing for general queries",
+            )
